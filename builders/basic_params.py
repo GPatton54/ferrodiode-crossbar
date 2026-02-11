@@ -46,6 +46,7 @@ def basic_params_FeD(
         asym_G_HRS: float,
         asym_a_HRS: float,
 
+        smoothing_voltage: float = 0.015,
         fe_kwargs: dict | None=None,
 ) -> FeD:
     
@@ -71,17 +72,21 @@ def basic_params_FeD(
     fe_kwargs = fe_kwargs or {}
 
     fed_params = FeDParams(
-        Gf_LRS_A=Gf_LRS,
-        af_LRS_per_V=af_LRS,
-        Gr_LRS_A=Gr_LRS,
-        ar_LRS_per_V=ar_LRS,
-        Gf_HRS_A=Gf_HRS,
-        af_HRS_per_V=af_HRS,
-        Gr_HRS_A=Gr_HRS,
-        ar_HRS_per_V=ar_HRS,
+        Gf_LRS_A = Gf_LRS,
+        af_LRS_per_V = af_LRS,
+        Gr_LRS_A = Gr_LRS,
+        ar_LRS_per_V = ar_LRS,
+        Gf_HRS_A = Gf_HRS,
+        af_HRS_per_V = af_HRS,
+        Gr_HRS_A = Gr_HRS,
+        ar_HRS_per_V = ar_HRS,
+        V_smooth_V = smoothing_voltage
         **fe_kwargs
     )
 
-    fed_object = FeD(fed_params)
+    fed_object = FeD(fed_params, enable_Vshift=False)
+    # dont Vshift basic params
+    # user inputs in this case lock the voltage (x) position of curves
+    # additional voltage shifts breaks the enforced physics
 
     return fed_object

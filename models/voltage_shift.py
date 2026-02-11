@@ -60,10 +60,11 @@ class FeD:
     - HRS: shifted by +ΔV with its own (Gf, af, Gr, ar).
     """
 
-    def __init__(self, params: FeDParams):
+    def __init__(self, params: FeDParams, *, enable_Vshift: bool = True):
         if not (0.0 < params.beta < 1.0): #beta = [(C_ox / C_fe) + 1]^{-1}
             raise ValueError(f"beta must be in (0,1). Got beta={params.beta}")
         self.p = params
+        self.enable_Vshift = enable_Vshift
 
     # ---------------------------
     # Unit conversions
@@ -159,7 +160,11 @@ class FeD:
                 )
         
         if state == "HRS":
-            Veff = V - self.deltaV_V()
+            if self.enable_Vshift:    
+                Veff = V - self.deltaV_V()
+            else:
+                Veff = V
+            
             return self._state_current_A(
                 Veff,
                 Gf_A=self.p.Gf_HRS_A,
