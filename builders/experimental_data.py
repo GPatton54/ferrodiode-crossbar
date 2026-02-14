@@ -6,6 +6,9 @@ from models.voltage_shift import FeD, FeDParams
 
 def fit_one_branch(V: np.ndarray, I: np.ndarray) -> Dict[str, float]:
 
+    V = np.asarray(V)
+    I = np.asarray(I)
+
     V_abs = np.abs(V - V[0]) #standardized voltages abs value distance from cusp
     G0 = I[0] #I min at cusp
     alpha0 = np.log(I[-1] / G0) / V_abs[-1]
@@ -16,7 +19,6 @@ def fit_one_branch(V: np.ndarray, I: np.ndarray) -> Dict[str, float]:
 
     return LRS_dict
 
-
 def create_LRS_from_data(filename: str) -> Dict[str, Dict[str, float]]:
 
     curves = read_IV_csv(filename)
@@ -24,10 +26,16 @@ def create_LRS_from_data(filename: str) -> Dict[str, Dict[str, float]]:
 
     I = next(I for col_name,I in curves.items() if col_name != "voltage")
 
-    cusp_index = np.argmin(I)
+    sort_indices = np.argsort(V)
+    V = V[sort_indices]
+    I = I[sort_indices]
 
-    V_upper, I_upper = V[cusp_index:], I[cusp_index]
-    V_lower, I_lower = V[:cusp_index+1], I[:cusp_index+1]
+    I_mag = np.abs(I)
+
+    cusp_index = np.argmin(I_mag)
+
+    V_upper, I_upper = V[cusp_index:], I_mag[cusp_index:]
+    V_lower, I_lower = V[:cusp_index+1], I_mag[:cusp_index+1]
 
     upper_branch_exp_curve = fit_one_branch(V_upper, I_upper)
     lower_branch_exp_curve = fit_one_branch(V_lower[::-1], I_lower[::-1])
