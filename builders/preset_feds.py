@@ -84,5 +84,5 @@ def fed_from_literature(name: str, *, variant: int = 0) -> FeD:
         ar_HRS_per_V = ar,
     )
 
-    return FeD(params, enable_voltage_shift=False)
+    return FeD(params, enable_Vshift=False)
     #dont Vshift because physics is already enforced by ON/OFF info

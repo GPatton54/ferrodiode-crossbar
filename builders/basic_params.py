@@ -80,7 +80,7 @@ def basic_params_FeD(
         af_HRS_per_V = af_HRS,
         Gr_HRS_A = Gr_HRS,
         ar_HRS_per_V = ar_HRS,
-        V_smooth_V = smoothing_voltage
+        V_smooth_V = smoothing_voltage,
         **fe_kwargs
     )
 
