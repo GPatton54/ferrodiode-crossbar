@@ -1,6 +1,18 @@
 from dataclasses import dataclass
 from typing import Union
+from typing import Tuple
+from typing import Dict
 import numpy as np
+import matplotlib.pyplot as plt
+
+from utils.iv_csv import *
+from utils.curve_fitting import *
+from utils.fed_literature import (
+    kim_2024,
+    han_chen_2025,
+    liu_2022,
+    hu_2025,
+)
 
 """
 Simple compact Ferrodiode (FeD) model that mimics the FeD's qualitative I–V 
@@ -60,11 +72,273 @@ class FeD:
     - HRS: shifted by +ΔV with its own (Gf, af, Gr, ar).
     """
 
-    def __init__(self, params: FeDParams, *, enable_Vshift: bool = True):
-        if not (0.0 < params.beta < 1.0): #beta = [(C_ox / C_fe) + 1]^{-1}
-            raise ValueError(f"beta must be in (0,1). Got beta={params.beta}")
-        self.p = params
+    # -------------------------------
+    # MASTER CONSTRUCTOR
+    # -------------------------------
+
+    def __init__(
+        self,
+        initialize_type: str,
+        *,
+        file_csv: str = None,
+        preset_model: str = None,
+        enable_Vshift: bool = True,
+        **custom_basic_params_kwargs,
+        ):
+
+        self.initialize_type = initialize_type
         self.enable_Vshift = enable_Vshift
+        self.state = "LRS"
+        self.p = None #FeDparams placeholder, each option will fill this with FeDparams
+
+        if initialize_type == "experimental":
+            self._init_experimental_data(file_csv)
+
+        elif initialize_type == "custom":
+            self._init_basic_params(**custom_basic_params_kwargs)
+
+        elif initialize_type == "preset":
+            self._init_preset_fed(preset_model, variant=0)
+
+        else:
+            raise ValueError(f"Invalid initialization type '{initialize_type}'")
+
+    # -------------------------------
+    # INITIALIZATION OPTIONS
+    # -------------------------------
+
+
+    # OPTION 1: EXPERIMENTAL DATA
+
+    def _init_experimental_data(self, csv_filename: str):
+        """
+        Create a fed object using the LRS curve parameters we got
+        by fitting experimental data. Set our FeD object parameters
+        to the fitted params. Voltage shifting (HRS) is handled automatically
+        """
+
+        LRS_params = self._create_LRS_from_data(csv_filename)
+
+        params = FeDParams(
+            #LRS upper branch (forward bias)
+            Gf_LRS_A = LRS_params["upper"]["G"],
+            af_LRS_per_V = LRS_params["upper"]["alpha"],
+            #LRS lower branch (reverse bias)
+            Gr_LRS_A = LRS_params["lower"]["G"],
+            ar_LRS_per_V = LRS_params["lower"]["alpha"],
+        )
+
+        """
+        for HRS, set the exact same G,alpha params.
+        then voltage shifting of the curve is done automatically
+        by voltage_shift.py when current(self,state="HRS",V) is called
+        """
+
+        #HRS upper branch
+        params.Gf_HRS_A = params.Gf_LRS_A
+        params.af_HRS_per_V = params.af_LRS_per_V
+        
+        #HRS lower branch
+        params.Gr_HRS_A = params.Gr_LRS_A
+        params.ar_HRS_per_V = params.ar_LRS_per_V
+
+        self.p = params
+
+    # OPTION 2: CUSTOM BASIC PARAMS
+    
+    def _init_basic_params(
+        self,
+        *,
+        V_read: float,
+        V_write: float,
+        G_on: float,
+        G_off: float,
+        I_on: float,
+        I_off: float,
+
+        asym_G_LRS: float,
+        asym_a_LRS: float,
+        asym_G_HRS: float,
+        asym_a_HRS: float,
+
+        smoothing_voltage: float = 0.015,
+        fe_kwargs: dict | None = None,
+    ):
+        
+        Gf_LRS, af_LRS = self.get_exp_params(I_on, V_read, G_on)
+        Gr_LRS, ar_LRS = asym_G_LRS * Gf_LRS, asym_a_LRS * af_LRS
+
+        Gf_HRS, af_HRS = self.get_exp_params(I_off, V_read, G_off)
+        Gr_HRS, ar_HRS = asym_G_HRS * Gf_HRS, asym_a_HRS * af_HRS
+
+        fe_kwargs = fe_kwargs or {}
+
+        self.p = FeDParams(
+            Gf_LRS_A=Gf_LRS,
+            af_LRS_per_V=af_LRS,
+            Gr_LRS_A=Gr_LRS,
+            ar_LRS_per_V=ar_LRS,
+            Gf_HRS_A=Gf_HRS,
+            af_HRS_per_V=af_HRS,
+            Gr_HRS_A=Gr_HRS,
+            ar_HRS_per_V=ar_HRS,
+            V_smooth_V=smoothing_voltage,
+            **fe_kwargs
+        )
+
+        self.enable_Vshift = False
+
+    # OPTION 3: PRESET FEDs
+
+    def _init_preset_fed(self, model_name: str, variant: int):
+
+        fed_literature_options = {
+            "kim_2024": kim_2024,
+            "han_chen_2025": han_chen_2025,
+            "liu_2022": liu_2022,
+            "hu_2025": hu_2025,
+        }
+
+        def pick(x, variant: int): # pick the selected variant value ONLY IF x has variants 
+            if isinstance(x, (list, tuple)):
+                return x[variant]
+            else:
+                return x
+            
+        if model_name not in fed_literature_options:
+            raise ValueError(f"Unknown preset device '{model_name}' selected.")
+        
+        device = fed_literature_options[model_name]
+
+        # extract params
+
+        V_read = pick(device["V_read"], variant)
+
+        LRS_GOhm = pick(device["LRS"], variant)
+        HRS_GOhm = pick(device["HRS"], variant)
+
+        #voltage and current ranges
+        V_range = device["V_range"]
+        I_range = device["I_range"]
+
+        # max voltage
+        if isinstance(V_range, (list, tuple)):
+            V_max = max(V_range)
+        else:
+            V_max = V_range
+
+        # max/min current
+        I_max = max(I_range)
+        I_min = min(I_range)
+
+        #Deriving relevant quantities
+        G_on = 1.0 / (LRS_GOhm * 1e9)
+        G_off = 1.0 / (HRS_GOhm * 1e9)
+
+        I_on = G_on * V_read
+        I_off = G_off * V_read
+
+        #exp slope
+        alpha = np.log(I_max / I_min) / V_max
+
+        #G conductance related exp parameter
+        Gf_LRS = I_on / np.exp(alpha * V_read)
+        Gf_HRS = I_off / np.exp(alpha * V_read)
+
+        Gr_LRS = Gf_LRS
+        Gr_HRS = Gf_HRS
+        ar = alpha
+
+        params = FeDParams(
+            Gf_LRS_A = Gf_LRS,
+            af_LRS_per_V = alpha,
+            Gr_LRS_A = Gr_LRS,
+            ar_LRS_per_V = ar,
+            Gf_HRS_A = Gf_HRS,
+            af_HRS_per_V = alpha,
+            Gr_HRS_A = Gr_HRS,
+            ar_HRS_per_V = ar,
+        )
+
+        self.p = params
+        self.enable_Vshift = False
+        
+
+    # -------------------------------
+    # Experimental Data Fitting Functions
+    # -------------------------------
+    
+    @staticmethod
+    def _fit_one_branch_(V: np.ndarray, I: np.ndarray) -> Dict[str, float]:
+
+        V = np.asarray(V)
+        I = np.asarray(I)
+
+        V_abs = np.abs(V - V[0]) #standardized voltages abs value distance from cusp
+        G0 = I[0] #I min at cusp
+        alpha0 = np.log(I[-1] / G0) / V_abs[-1]
+
+        G_fit, alpha_fit, loss, R2 = fit_IV_curve(V_abs, I, [G0, alpha0])
+
+        LRS_dict = {"G": G_fit, "alpha": alpha_fit, "loss": loss, "R2": R2}
+
+        return LRS_dict
+
+    @staticmethod
+    def _create_LRS_from_data(filename: str) -> Dict[str, Dict[str, float]]:
+
+        curves = read_IV_csv(filename)
+        V = curves["voltage"]
+
+        I = next(I for col_name,I in curves.items() if col_name != "voltage")
+
+        sort_indices = np.argsort(V)
+        V = V[sort_indices]
+        I = I[sort_indices]
+
+        I_mag = np.abs(I)
+
+        cusp_index = np.argmin(I_mag)
+
+        V_upper, I_upper = V[cusp_index:], I_mag[cusp_index:]
+        V_lower, I_lower = V[:cusp_index+1], I_mag[:cusp_index+1]
+
+        upper_branch_exp_curve = FeD._fit_one_branch_(V_upper, I_upper)
+        lower_branch_exp_curve = FeD._fit_one_branch_(V_lower[::-1], I_lower[::-1])
+
+        LRS_params = {
+            "upper": upper_branch_exp_curve,
+            "lower": lower_branch_exp_curve
+        }
+
+        return LRS_params
+    
+    # -------------------------------
+    # Custom Basic Params Helper
+    # -------------------------------
+
+    @staticmethod
+    def get_exp_params( #helper func to get G and alpha from the basic inputs
+        I_target: float,
+        V_target: float,
+        dIdV: float
+    ) -> Tuple[float,float]:
+        """
+        Given:
+        - Itarget = I at Vread
+        - Vtarget = Vread
+        - G_on = dI/dV
+        Solve analytically for G, alpha.
+        """
+
+        if I_target <= 0 or V_target < 0 or dIdV <= 0:
+            raise ValueError("I, V, derivative must be positive for fitting")
+        
+        alpha = dIdV / I_target
+        G = I_target / np.exp(alpha * V_target)
+
+        return G, alpha
+        
 
     # ---------------------------
     # Unit conversions
@@ -110,6 +384,7 @@ class FeD:
     # ---------------------------
     # Backbone I–V (state-selectable)
     # ---------------------------
+
     def _state_current_A(
         self,
         V: np.ndarray,
