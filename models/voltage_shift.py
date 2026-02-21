@@ -42,6 +42,8 @@ class FeDParams:
     Ec_MV_cm: float = 3.00 # Coercive field [MV/cm]
     eps_r_fe: float = 19.0 # Dielectric constant
 
+    sw_thres: float = 2e-9 #Voltage-time integral threshold to switch polarization. V*uS
+
     # --- Empirical I–V parameters: LRS --- (approximated from previous work)
     # Forward (+V): I ~ Gf_LRS * exp(af_LRS * |V|)
     Gf_LRS_A: float = 1e-15
@@ -338,7 +340,45 @@ class FeD:
         G = I_target / np.exp(alpha * V_target)
 
         return G, alpha
+
+    # ---------------------------
+    # READ/WRITE
+    # ---------------------------
         
+    def read(self, V_read, read_disturb=False):
+        I = self.current(self.state, V_read)
+        
+        if read_disturb:
+            noise = np.random.normal(scale=0.01 * abs(I))
+        else:
+            noise = 0.0
+            
+        return I + noise
+    
+    def write(self, V_pulse, pulse_width_uS):
+        """
+        Apply a voltage pulse and update polarization state if switching condition met.
+        """
+        Vc = self._Ec_MV_cm_to_V_m(self.p.Ec_MV_cm) * self._t_nm_to_m(self.p.t_nm)
+        sw = self.p.sw_thres
+
+        #coercive voltage met
+        if abs(V_pulse) <= Vc:
+            return False  # no switching
+
+        pulse_integral = (abs(V_pulse) - Vc) * pulse_width_uS
+
+        #pulse integral too low
+        if pulse_integral < sw:
+            return False
+        
+        #switching occurs
+        if V_pulse > 0:
+            self.state = "LRS" #SET
+        else:
+            self.state = "HRS" #RESET
+
+        return True
 
     # ---------------------------
     # Unit conversions
